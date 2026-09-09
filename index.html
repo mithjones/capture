@@ -47,6 +47,10 @@
   }
   h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
   #clock { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  #gear {
+    background: none; border: none; padding: 0 0 0 12px; flex: none;
+    color: var(--muted); font-size: 13px; font-weight: 400; width: auto;
+  }
 
   /* ---------- transcript ---------- */
   main { flex: 1; overflow-y: auto; padding: 22px 2px; }
@@ -144,16 +148,17 @@
 
 <header>
   <h1>Capture</h1>
-  <span id="clock"></span>
+  <span><span id="clock"></span> <button id="gear" title="Connection settings" aria-label="Connection settings">Settings</button></span>
 </header>
 
 <main>
   <div id="setup" class="hidden">
     <p>Connect this device to your Worker. Both values are stored on this phone only.</p>
     <label for="url">Worker address</label>
-    <input id="url" type="url" inputmode="url" autocomplete="off" placeholder="https://mcj-voice-capture.workers.dev">
+    <input id="url" type="url" inputmode="url" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="https://mcj-voice-capture.workers.dev">
     <label for="token">Access token</label>
-    <input id="token" type="password" autocomplete="off" placeholder="The APP_TOKEN you set">
+    <input id="token" type="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="The APP_TOKEN you set">
+    <p id="setupWarn" class="error" style="margin:0 0 14px"></p>
     <button class="primary" id="saveSetup">Save and continue</button>
   </div>
 
@@ -207,13 +212,34 @@
   el("url").value = S.url;
   el("token").value = S.token;
   el("saveSetup").addEventListener("click", function () {
-    S.url = el("url").value.trim().replace(/\/$/, "");
-    S.token = el("token").value.trim();
-    if (!S.url || !S.token) return;
-    localStorage.setItem("vc_url", S.url);
-    localStorage.setItem("vc_token", S.token);
+    // Strip every kind of whitespace — mobile keyboards love a trailing space.
+    var url = el("url").value.replace(/\s/g, "").replace(/\/+$/, "");
+    var token = el("token").value.replace(/\s/g, "");
+    var warn = el("setupWarn");
+
+    if (!url || !token) {
+      warn.textContent = "Both fields are needed.";
+      return;
+    }
+    if (!/^https:\/\//.test(url)) {
+      warn.textContent = "The Worker address must start with https://";
+      return;
+    }
+    warn.textContent = "";
+    S.url = url; S.token = token;
+    localStorage.setItem("vc_url", url);
+    localStorage.setItem("vc_token", token);
+    el("url").value = url; el("token").value = token;
     checkSetup();
   });
+
+  el("gear").addEventListener("click", function () {
+    el("setup").classList.remove("hidden");
+    el("work").classList.add("hidden");
+    mic.classList.add("hidden");
+    el("setupWarn").textContent = "";
+  });
+
   checkSetup();
 
   /* ---------- speech ---------- */
@@ -229,24 +255,24 @@
     recog.continuous = true;
     recog.interimResults = true;
 
-    var settled = "";
+    var prefix = "";
 
     recog.addEventListener("start", function () {
       S.listening = true;
-      settled = transcript.value ? transcript.value.trim() + " " : "";
+      prefix = transcript.value ? transcript.value.trim() + " " : "";
       mic.classList.add("listening");
       micLabel.textContent = "Listening — tap to stop";
       clearOutput();
     });
 
+    // Android Chrome re-delivers earlier results, so rebuild the whole string
+    // from e.results every time rather than appending from e.resultIndex.
     recog.addEventListener("result", function (e) {
-      var interim = "";
-      for (var i = e.resultIndex; i < e.results.length; i++) {
-        var chunk = e.results[i][0].transcript;
-        if (e.results[i].isFinal) settled += chunk + " ";
-        else interim += chunk;
+      var text = "";
+      for (var i = 0; i < e.results.length; i++) {
+        text += e.results[i][0].transcript + " ";
       }
-      transcript.value = (settled + interim).replace(/\s+/g, " ").trimStart();
+      transcript.value = (prefix + text).replace(/\s+/g, " ").trimStart();
     });
 
     recog.addEventListener("error", function (e) {

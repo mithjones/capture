@@ -1,5 +1,5 @@
 /* Caches the app shell so the icon opens instantly. Network calls are never cached. */
-const CACHE = "capture-v1";
+const CACHE = "capture-v2";
 const SHELL = ["./", "./index.html", "./manifest.json"];
 
 self.addEventListener("install", (e) => {

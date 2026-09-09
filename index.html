@@ -253,26 +253,44 @@
     recog = new SR();
     recog.lang = "en-AU";
     recog.continuous = true;
-    recog.interimResults = true;
+
+    // Android Chrome keeps every growing partial as its own result entry, so
+    // asking for interim results there produces "create / create a / create a
+    // reminder" stacked on top of each other. Finals only on Android; desktop
+    // keeps the live preview.
+    var isAndroid = /Android/i.test(navigator.userAgent);
+    recog.interimResults = !isAndroid;
 
     var prefix = "";
+    var finals = "";
+    var seen = 0;
 
     recog.addEventListener("start", function () {
       S.listening = true;
       prefix = transcript.value ? transcript.value.trim() + " " : "";
+      finals = "";
+      seen = 0;
       mic.classList.add("listening");
       micLabel.textContent = "Listening — tap to stop";
       clearOutput();
     });
 
-    // Android Chrome re-delivers earlier results, so rebuild the whole string
-    // from e.results every time rather than appending from e.resultIndex.
     recog.addEventListener("result", function (e) {
-      var text = "";
-      for (var i = 0; i < e.results.length; i++) {
-        text += e.results[i][0].transcript + " ";
+      // Never re-read an index already folded in, even if it is re-delivered.
+      var start = Math.max(e.resultIndex, seen);
+      var interim = "";
+
+      for (var i = start; i < e.results.length; i++) {
+        var chunk = e.results[i][0].transcript;
+        if (e.results[i].isFinal) {
+          finals += chunk + " ";
+          seen = i + 1;
+        } else {
+          interim += chunk;
+        }
       }
-      transcript.value = (prefix + text).replace(/\s+/g, " ").trimStart();
+
+      transcript.value = (prefix + finals + interim).replace(/\s+/g, " ").trimStart();
     });
 
     recog.addEventListener("error", function (e) {

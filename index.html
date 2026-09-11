@@ -60,7 +60,7 @@
     color: var(--text); font: inherit;
     font-size: 22px; font-weight: 300; line-height: 1.45;
     letter-spacing: -0.01em;
-    min-height: 120px; outline: none;
+    min-height: 110px; max-height: 340px; outline: none;
   }
   #transcript::placeholder { color: var(--muted); opacity: .55; }
 
@@ -246,6 +246,19 @@
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   var recog = null;
 
+  // How long a pause is allowed before capture ends on its own.
+  var SILENCE_LIMIT = 15000;
+  var wantListening = false;
+  var lastHeard = 0;
+  var countdownTimer = null;
+
+  // The box grows with the text so nothing is hidden below the fold.
+  function grow() {
+    transcript.style.height = "auto";
+    transcript.style.height = Math.min(transcript.scrollHeight, 340) + "px";
+  }
+  transcript.addEventListener("input", grow);
+
   if (!SR) {
     micLabel.textContent = "Type instead";
     mic.querySelector(".ring").style.background = "var(--muted)";
@@ -267,11 +280,12 @@
 
     recog.addEventListener("start", function () {
       S.listening = true;
+      // Everything captured so far becomes the prefix, so restarting after a
+      // pause appends rather than replaces.
       prefix = transcript.value ? transcript.value.trim() + " " : "";
       finals = "";
       seen = 0;
       mic.classList.add("listening");
-      micLabel.textContent = "Listening — tap to stop";
       clearOutput();
     });
 
@@ -290,33 +304,87 @@
         }
       }
 
+      lastHeard = Date.now();
       transcript.value = (prefix + finals + interim).replace(/\s+/g, " ").trimStart();
+      grow();
     });
 
     recog.addEventListener("error", function (e) {
-      stopListening();
       if (e.error === "not-allowed") {
+        wantListening = false;
+        stopListening();
         showError("Microphone access is blocked. Allow it for this site in Chrome's site settings.");
-      } else if (e.error !== "aborted" && e.error !== "no-speech") {
+      } else if (e.error === "no-speech" || e.error === "aborted") {
+        // Normal on a pause — the end handler decides whether to resume.
+      } else {
+        wantListening = false;
+        stopListening();
         showError("Speech input stopped: " + e.error + ". Type your note instead.");
       }
     });
 
+    // Android ends the session on every pause. Resume until either the user
+    // taps stop or SILENCE_LIMIT passes with nothing new being said.
     recog.addEventListener("end", function () {
-      if (S.listening) { stopListening(); interpret(); }
+      if (!wantListening) { stopListening(); return; }
+
+      if (Date.now() - lastHeard > SILENCE_LIMIT) {
+        wantListening = false;
+        stopListening();
+        return;
+      }
+
+      try {
+        recog.start();
+      } catch (err) {
+        // Restarting too fast — back off briefly, then try once more.
+        setTimeout(function () {
+          if (!wantListening) return;
+          try { recog.start(); } catch (e2) { wantListening = false; stopListening(); }
+        }, 300);
+      }
     });
   }
 
   function stopListening() {
     S.listening = false;
+    clearInterval(countdownTimer);
+    countdownTimer = null;
     mic.classList.remove("listening");
     micLabel.textContent = "Hold a thought";
   }
 
+  function startListening() {
+    wantListening = true;
+    lastHeard = Date.now();
+    clearInterval(countdownTimer);
+    countdownTimer = setInterval(function () {
+      if (!wantListening) return;
+      var quiet = Math.round((Date.now() - lastHeard) / 1000);
+      var left = Math.ceil((SILENCE_LIMIT - (Date.now() - lastHeard)) / 1000);
+      // Only nag once the pause is long enough to be worth mentioning.
+      micLabel.textContent =
+        quiet >= 5 ? "Still listening — " + Math.max(left, 0) + "s"
+                   : "Listening — tap to finish";
+      if (Date.now() - lastHeard > SILENCE_LIMIT) {
+        wantListening = false;
+        try { recog.stop(); } catch (e) { stopListening(); }
+      }
+    }, 500);
+
+    try { recog.start(); } catch (err) { /* already running */ }
+  }
+
   mic.addEventListener("click", function () {
     if (!recog) { interpret(); return; }
-    if (S.listening) { S.listening = false; recog.stop(); mic.classList.remove("listening"); micLabel.textContent = "Reading it back"; setTimeout(interpret, 250); }
-    else { try { recog.start(); } catch (err) { /* already running */ } }
+    if (S.listening || wantListening) {
+      wantListening = false;
+      micLabel.textContent = "Reading it back";
+      try { recog.stop(); } catch (e) {}
+      setTimeout(interpret, 300);
+    } else {
+      startListening();
+    }
   });
 
   /* ---------- output ---------- */
@@ -401,7 +469,12 @@
     call("/interpret", { transcript: text })
       .then(function (d) {
         if (!d.actions || !d.actions.length) {
-          showError(d.reply || "Nothing in that looked like an event or a task. Try again with a time or a to-do.");
+          output.innerHTML = "";
+          var p = document.createElement("p");
+          p.className = "note";
+          p.textContent = d.reply ||
+            "Nothing in that looked like an event or a task. Add a time or a to-do and tap the mic again.";
+          output.appendChild(p);
           return;
         }
         S.actions = d.actions;
@@ -446,7 +519,7 @@
           }
           output.appendChild(row);
         });
-        transcript.value = "";
+        transcript.value = ""; grow();
         S.actions = null;
         actionRow.classList.add("hidden");
       })
@@ -458,7 +531,7 @@
   });
 
   el("discard").addEventListener("click", function () {
-    transcript.value = "";
+    transcript.value = ""; grow();
     clearOutput();
     hint.classList.remove("hidden");
     transcript.focus();
